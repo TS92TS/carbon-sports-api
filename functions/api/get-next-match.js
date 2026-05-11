@@ -37,25 +37,54 @@ export async function onRequest(context) {
         "Content-Type": "application/json",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
       },
-      signal: AbortSignal.timeout(4000) 
+      signal: AbortSignal.timeout(4000)
     });
 
     if (!response.ok) throw new Error(`API_STATUS_${response.status}`);
 
+    // --- Updated logic: build featured match + upcoming array ---
     const data = await response.json();
     const now = new Date();
-    const nextMatch = data.matches.find(m => new Date(m.utcDate) > now);
+
+    // Filter for all future matches
+    const futureMatches = Array.isArray(data.matches)
+      ? data.matches.filter(m => new Date(m.utcDate) > now)
+      : [];
+
+    if (futureMatches.length === 0) {
+      // No upcoming fixtures — return a concluded status and attempt to update KV
+      const concludedPayload = { status: "concluded", updatedAt: new Date().toISOString() };
+      // Save concluded state as last known good
+      await KV.put("LATEST_MATCH", JSON.stringify(concludedPayload));
+      return new Response(JSON.stringify(concludedPayload), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      });
+    }
+
+    // The "Featured" match is the very first one
+    const featured = futureMatches[0];
 
     const formattedData = {
+      // ROOT LEVEL (Backward compatibility for Featured Match)
       status: "upcoming",
-      badge: nextMatch?.stage === "GROUP_STAGE" ? "Group Stage" : "Knockout",
-      datetimeIso: nextMatch?.utcDate,
-      teamA: { name: nextMatch?.homeTeam.tla, flag: nextMatch?.homeTeam.crest },
-      teamB: { name: nextMatch?.awayTeam.tla, flag: nextMatch?.awayTeam.crest },
+      badge: featured.stage === "GROUP_STAGE" ? "Group Stage" : "Knockout",
+      datetimeIso: featured.utcDate,
+      teamA: { name: featured.homeTeam.tla, flag: featured.homeTeam.crest },
+      teamB: { name: featured.awayTeam.tla, flag: featured.awayTeam.crest },
+
+      // NEW UPCOMING ARRAY (For the fixtures list)
+      upcoming: futureMatches.slice(0, 5).map(match => ({
+        datetimeIso: match.utcDate,
+        teamA: { name: match.homeTeam.tla, flag: match.homeTeam.crest },
+        teamB: { name: match.awayTeam.tla, flag: match.awayTeam.crest },
+        badge: match.stage === "GROUP_STAGE" ? "Group Stage" : "Knockout"
+      })),
+
       updatedAt: new Date().toISOString()
     };
 
-    // Store in KV as the "Last Known Good"
+    // Save this whole object to KV as the "Last Known Good"
     await KV.put("LATEST_MATCH", JSON.stringify(formattedData));
 
     return new Response(JSON.stringify(formattedData), {
