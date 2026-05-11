@@ -74,7 +74,7 @@ export async function onRequest(context) {
       teamB: { name: featured.awayTeam.tla, flag: featured.awayTeam.crest },
 
       // NEW UPCOMING ARRAY (For the fixtures list)
-      upcoming: futureMatches.slice(0, 5).map(match => ({
+      upcoming: futureMatches.slice(0, 12).map(match => ({
         datetimeIso: match.utcDate,
         teamA: { name: match.homeTeam.tla, flag: match.homeTeam.crest },
         teamB: { name: match.awayTeam.tla, flag: match.awayTeam.crest },
