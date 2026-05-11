@@ -69,14 +69,14 @@ export async function onRequest(context) {
       }
     });
 
-  } catch (error) {
-    console.error(error);
-    return new Response(JSON.stringify({ error: 'Failed to fetch match data' }), {
+} catch (error) {
+    console.error('Proxy Error:', error);
+    
+    return new Response(JSON.stringify({ error: error.message }), {
       status: 500,
       headers: { 
         'Content-Type': 'application/json',
-        ...corsHeaders // Inject CORS headers here too!
+        ...corsHeaders 
       }
     });
   }
-}
