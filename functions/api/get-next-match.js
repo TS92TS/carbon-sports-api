@@ -20,11 +20,14 @@ export async function onRequest(context) {
   const API_URL = 'https://api.football-data.org/v4/competitions/2000/matches';
 
   try {
+// 4. Fetch the data securely with a User-Agent to bypass bot-blockers
     const response = await fetch(API_URL, {
       method: 'GET',
       headers: {
         'X-Auth-Token': API_KEY,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        // Add this line to pretend we are a normal Google Chrome browser:
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
       }
     });
 
