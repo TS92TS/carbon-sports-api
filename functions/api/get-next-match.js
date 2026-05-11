@@ -1,7 +1,8 @@
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Origin': '*', 
   'Access-Control-Allow-Methods': 'GET, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, User-Agent',
+  'Access-Control-Max-Age': '86400', // Tells mobile browsers to "remember" this permission for 24 hours
 };
 
 export async function onRequest(context) {
