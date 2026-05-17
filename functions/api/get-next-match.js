@@ -194,10 +194,9 @@ async function fetchFromFootballData(API_KEY) {
     datetimeIso: featured.utcDate,
     teamA: { name: featured.homeTeam?.tla ?? "", flag: featured.homeTeam?.crest ?? "" },
     teamB: { name: featured.awayTeam?.tla ?? "", flag: featured.awayTeam?.crest ?? "" },
-    upcoming: futureMatches.slice(0, 10).map((m) => formatMatch(m)),
+    upcoming: futureMatches.map((m) => formatMatch(m)),
     england: futureMatches
       .filter((m) => m.homeTeam?.tla === "ENG" || m.awayTeam?.tla === "ENG")
-      .slice(0, 4)
       .map((m) => formatMatch(m)),
     updatedAt: new Date().toISOString(),
   };
