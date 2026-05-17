@@ -139,7 +139,7 @@ export async function onRequest(context) {
   }
 
   // 6. Hard Cache Miss Path (Blocking Live Build)
-  return fetchUpstream(request, KV, API_KEY, cache, cacheKey);
+  return fetchUpstream(context, KV, API_KEY, cache, cacheKey);
 }
 
 /**
@@ -159,8 +159,10 @@ async function refreshUpstream(KV, API_KEY) {
 /**
  * Blocking Upstream Fetch Handler (Executed only when KV is empty)
  */
-async function fetchUpstream(request, KV, API_KEY, cache, cacheKey) {
+async function fetchUpstream(context, KV, API_KEY, cache, cacheKey) {
+  const { request } = context;
   let subRequestCount = 0;
+  
   const incrementAndCheck = () => {
     subRequestCount++;
     if (subRequestCount > MAX_SUB_REQUESTS) {
@@ -191,7 +193,7 @@ async function fetchUpstream(request, KV, API_KEY, cache, cacheKey) {
       },
     });
 
-    // Seed Layer 1 CDN memory right away
+    // Seed Layer 1 CDN memory right away safely using the inherited context
     context.waitUntil(cache.put(cacheKey, liveResponse.clone()));
     return liveResponse;
 
