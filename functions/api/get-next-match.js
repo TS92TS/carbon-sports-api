@@ -170,14 +170,18 @@ export async function onRequest(context) {
 
   // 5. KV Stale Path -> Background Revalidate
   if (cached) {
-    // OPTIMIZATION: Write the 60s cache anchor FIRST to instantly block concurrent requests
+    // OPTIMIZATION FIXED: Write the 60s cache anchor FIRST to instantly seal the micro-window
     context.waitUntil(cache.put(cacheKey, buildCacheableShell(cached, "KV-Stale", 60)));
     
-    // Then kick off the slow background network call safely behind the shield
+    // Kick off the slow background network call safely behind the shield
     context.waitUntil(refreshUpstream(KV, API_KEY));
     
     return buildClientResponse(request, cached, "KV-Stale", 60);
   }
+
+  // 6. Hard Cache Miss Path (Blocking Live Build)
+  return fetchUpstream(context, KV, API_KEY, cache, cacheKey);
+}
 
 /**
  * Asynchronous Background Refresh Pipeline.
