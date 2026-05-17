@@ -1,8 +1,10 @@
 // File: functions/api/get-next-match.js
 // Dual-Layer Edge Caching Framework (CDN Cache API + Global KV Store)
-// Locks down CORS permissions and prevents background cache stampedes.
+// Strict CORS partitioning — the CDN cache stores a "naked" payload (no
+// ACAO) and per-request responses are rebuilt with the calling origin's
+// headers so one origin's cold-fill cannot poison another origin's hit.
 
-const CORS_HEADERS = {
+const CORS_BASE_HEADERS = {
   "Access-Control-Allow-Methods": "GET, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, X-Requested-With",
   "Access-Control-Max-Age": "86400",
@@ -21,13 +23,20 @@ const ALLOWED_ORIGINS = [
   "null",                                 // Allows local file:// browser inspection
 ];
 
+/**
+ * Builds CORS headers for THIS request only. Origins not on the allow-list
+ * receive a response with NO Access-Control-Allow-Origin header — the
+ * browser then blocks the response. We never echo an unauthorised origin,
+ * and we never default to a "safe" allow-listed origin: that legacy
+ * fallback was what made the CDN cache poisonable in the first place.
+ */
 function getCorsHeaders(request) {
   const origin = request.headers.get("Origin") || "";
-  const allowOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
-  return {
-    ...CORS_HEADERS,
-    "Access-Control-Allow-Origin": allowOrigin,
-  };
+  const headers = { ...CORS_BASE_HEADERS };
+  if (ALLOWED_ORIGINS.includes(origin)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+  }
+  return headers;
 }
 
 // Caching parameters
@@ -35,14 +44,49 @@ const CACHE_TTL_MS = 3600000; // 60 minutes KV freshness window
 const LOOP_HEADER = "X-Loop-Protection";
 const MAX_SUB_REQUESTS = 5;
 
+/**
+ * Build the response sent to the client. CORS headers are synthesised at
+ * response time using the current caller's Origin — never cached.
+ */
+function buildClientResponse(request, body, source, maxAgeSeconds) {
+  return new Response(body, {
+    status: 200,
+    headers: {
+      ...getCorsHeaders(request),
+      "Content-Type": "application/json",
+      "X-Data-Source": source,
+      "Cache-Control": `public, max-age=${maxAgeSeconds}`,
+    },
+  });
+}
+
+/**
+ * Build the "naked" Response stored in caches.default. No CORS headers —
+ * those are per-request and synthesised by buildClientResponse on every
+ * hit. The X-Data-Source marker rides along so cache hits can faithfully
+ * report whether the underlying body was originally KV-Fresh / KV-Stale /
+ * Live. The Cache-Control on this shell controls how long the CDN itself
+ * retains it before re-invoking the Worker.
+ */
+function buildCacheableShell(body, source, maxAgeSeconds) {
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json",
+      "X-Data-Source": source,
+      "Cache-Control": `public, max-age=${maxAgeSeconds}`,
+    },
+  });
+}
+
 export async function onRequest(context) {
   const { request, env } = context;
 
   // 1. Handle Preflight Options Request
   if (request.method === "OPTIONS") {
-    return new Response(null, { 
-      status: 204, 
-      headers: getCorsHeaders(request) 
+    return new Response(null, {
+      status: 204,
+      headers: getCorsHeaders(request),
     });
   }
 
@@ -56,18 +100,26 @@ export async function onRequest(context) {
 
   // =========================================================================
   // === LAYER 1: CDN EDGE CACHE API SHIELD (PREVENTS THUNDERING HERD) ===
+  // Stores a naked payload (no ACAO) — per-request CORS is rebuilt below so
+  // origin A's cold-fill never serves the wrong header to origin B.
   // =========================================================================
   const cacheUrl = new URL(request.url);
-  cacheUrl.search = ""; // Normalize cache key by stripping query/cache-busting parameters
+  cacheUrl.search = ""; // Normalize cache key by stripping cache-busting parameters
   const cacheKey = new Request(cacheUrl.toString(), { method: "GET" });
   const cache = caches.default;
 
   try {
-    const edgeCachedResponse = await cache.match(cacheKey);
-    if (edgeCachedResponse) {
-      // Return edge-cached response immediately.
-      // Zero Worker compute execution, zero KV reads, zero background stampedes.
-      return edgeCachedResponse;
+    const edgeCachedShell = await cache.match(cacheKey);
+    if (edgeCachedShell) {
+      // Read body + provenance from the cached shell, rebuild the response
+      // with THIS request's CORS headers. Zero KV reads, zero background
+      // refresh, zero risk of serving a foreign origin's ACAO.
+      const body = await edgeCachedShell.text();
+      const source = edgeCachedShell.headers.get("X-Data-Source") || "Edge-Cache";
+      // Mirror the underlying shell's freshness window to the browser so a
+      // stale-anchored hit doesn't extend client-side staleness to 5 min.
+      const maxAge = source === "KV-Stale" ? 60 : 300;
+      return buildClientResponse(request, body, source, maxAge);
     }
   } catch (cacheErr) {
     console.warn("CDN Edge Cache API split state or unavailable");
@@ -95,8 +147,13 @@ export async function onRequest(context) {
     cacheMeta = kvResult?.metadata;
 
     if (cached && cacheMeta?.updatedAt) {
-      const ageMs = Date.now() - new Date(cacheMeta.updatedAt).getTime();
-      isFresh = ageMs < CACHE_TTL_MS;
+      // Hardened parse: rejects NaN, future-clock skew, and garbage strings
+      // so a corrupted metadata write can never silently pass the gate.
+      const updatedAtMs = Date.parse(cacheMeta.updatedAt);
+      if (Number.isFinite(updatedAtMs)) {
+        const ageMs = Date.now() - updatedAtMs;
+        isFresh = ageMs >= 0 && ageMs < CACHE_TTL_MS;
+      }
     }
   } catch (kvErr) {
     console.warn("KV read failed:", kvErr);
@@ -104,46 +161,29 @@ export async function onRequest(context) {
 
   // 4. KV Fresh Cache Path
   if (isFresh && cached) {
-    const freshResponse = new Response(cached, {
-      status: 200,
-      headers: {
-        ...getCorsHeaders(request),
-        "Content-Type": "application/json",
-        "X-Data-Source": "KV-Fresh",
-        "Cache-Control": "public, max-age=300", // Cache at CDN layer for 5 minutes
-      },
-    });
-
-    // Populate Layer 1 CDN memory so subsequent concurrent hits never execute the worker script
-    context.waitUntil(cache.put(cacheKey, freshResponse.clone()));
-    return freshResponse;
+    // Seed the CDN cache with a naked shell so subsequent concurrent hits
+    // never execute the worker. The client-bound response is built
+    // separately so its CORS headers are scoped to THIS request only.
+    context.waitUntil(cache.put(cacheKey, buildCacheableShell(cached, "KV-Fresh", 300)));
+    return buildClientResponse(request, cached, "KV-Fresh", 300);
   }
 
   // 5. KV Stale Path -> Background Revalidate
   if (cached) {
+    // OPTIMIZATION: Write the 60s cache anchor FIRST to instantly block concurrent requests
+    context.waitUntil(cache.put(cacheKey, buildCacheableShell(cached, "KV-Stale", 60)));
+    
+    // Then kick off the slow background network call safely behind the shield
     context.waitUntil(refreshUpstream(KV, API_KEY));
     
-    const staleResponse = new Response(cached, {
-      status: 200,
-      headers: {
-        ...getCorsHeaders(request),
-        "Content-Type": "application/json",
-        "X-Data-Source": "KV-Stale",
-        "Cache-Control": "public, max-age=60", // Throttle concurrent stampedes down to 60-second intervals
-      },
-    });
-
-    // Populate Layer 1 CDN memory briefly to anchor background execution
-    context.waitUntil(cache.put(cacheKey, staleResponse.clone()));
-    return staleResponse;
+    return buildClientResponse(request, cached, "KV-Stale", 60);
   }
 
-  // 6. Hard Cache Miss Path (Blocking Live Build)
-  return fetchUpstream(context, KV, API_KEY, cache, cacheKey);
-}
-
 /**
- * Asynchronous Background Refresh Pipeline
+ * Asynchronous Background Refresh Pipeline.
+ * Fires from `context.waitUntil` on the stale path — write-only, never
+ * responds to the client. Errors are swallowed because the stale payload
+ * already shipped.
  */
 async function refreshUpstream(KV, API_KEY) {
   try {
@@ -157,12 +197,16 @@ async function refreshUpstream(KV, API_KEY) {
 }
 
 /**
- * Blocking Upstream Fetch Handler (Executed only when KV is empty)
+ * Blocking Upstream Fetch Handler (Executed only when KV is empty).
+ * MAX_SUB_REQUESTS is a per-invocation guardrail against a future fan-out
+ * bug inside this function — it cannot prevent cross-invocation stampedes.
+ * Cross-invocation defence is the CDN cache anchor + the stale-path
+ * background refresh, both of which fire eagerly via context.waitUntil.
  */
 async function fetchUpstream(context, KV, API_KEY, cache, cacheKey) {
   const { request } = context;
   let subRequestCount = 0;
-  
+
   const incrementAndCheck = () => {
     subRequestCount++;
     if (subRequestCount > MAX_SUB_REQUESTS) {
@@ -173,30 +217,21 @@ async function fetchUpstream(context, KV, API_KEY, cache, cacheKey) {
   try {
     incrementAndCheck();
     const payload = await fetchFromFootballData(API_KEY);
+    const bodyString = JSON.stringify(payload);
 
     try {
       incrementAndCheck();
-      await KV.put("LATEST_MATCH", JSON.stringify(payload), {
+      await KV.put("LATEST_MATCH", bodyString, {
         metadata: { updatedAt: new Date().toISOString() },
       });
     } catch (kvErr) {
       console.warn("KV write failed:", kvErr);
     }
 
-    const liveResponse = new Response(JSON.stringify(payload), {
-      status: 200,
-      headers: {
-        ...getCorsHeaders(request),
-        "Content-Type": "application/json",
-        "X-Data-Source": "Live",
-        "Cache-Control": "public, max-age=300",
-      },
-    });
-
-    // Seed Layer 1 CDN memory right away safely using the inherited context
-    context.waitUntil(cache.put(cacheKey, liveResponse.clone()));
-    return liveResponse;
-
+    // Seed CDN cache with the naked shell; client response carries this
+    // caller's CORS headers built freshly via buildClientResponse.
+    context.waitUntil(cache.put(cacheKey, buildCacheableShell(bodyString, "Live", 300)));
+    return buildClientResponse(request, bodyString, "Live", 300);
   } catch (error) {
     return new Response(JSON.stringify({ error: error.message }), {
       status: 502,
@@ -234,15 +269,15 @@ async function fetchFromFootballData(API_KEY) {
     return {
       datetimeIso: m.utcDate,
       id: `${m.utcDate?.slice(0, 10)}_${m.homeTeam?.tla ?? "TBD"}_VS_${m.awayTeam?.tla ?? "TBD"}`,
-      teamA: { 
-        name: m.homeTeam?.name ?? "",  
-        tla: m.homeTeam?.tla ?? "",    
-        flag: m.homeTeam?.crest ?? "" 
+      teamA: {
+        name: m.homeTeam?.name ?? "",
+        tla: m.homeTeam?.tla ?? "",
+        flag: m.homeTeam?.crest ?? "",
       },
-      teamB: { 
-        name: m.awayTeam?.name ?? "", 
+      teamB: {
+        name: m.awayTeam?.name ?? "",
         tla: m.awayTeam?.tla ?? "",
-        flag: m.awayTeam?.crest ?? "" 
+        flag: m.awayTeam?.crest ?? "",
       },
       badge: m.stage === "GROUP_STAGE" ? "Group Stage" : "Knockout",
     };
