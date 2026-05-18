@@ -1,8 +1,5 @@
 // File: functions/api/get-next-match.js
 // Dual-Layer Edge Caching Framework (CDN Cache API + Global KV Store)
-// Strict CORS partitioning — the CDN cache stores a "naked" payload (no
-// ACAO) and per-request responses are rebuilt with the calling origin's
-// headers so one origin's cold-fill cannot poison another origin's hit.
 
 const CORS_BASE_HEADERS = {
   "Access-Control-Allow-Methods": "GET, OPTIONS",
@@ -11,41 +8,38 @@ const CORS_BASE_HEADERS = {
   "Vary": "Origin",
 };
 
-// === ORIGIN SECURITY LOCKDOWN ===
-const ALLOWED_ORIGINS = [
+// === STRICT PRODUCTION DOMAINS ===
+// No wildcards allowed for security.
+const PRODUCTION_ORIGINS = [
   "https://carbonfootball.co.uk",
   "https://welovecarbon.com",
   "https://carbonfootball.pages.dev",
   "https://ts92ts.github.io",
-// Local wrangler & build servers
-  "http://localhost:8788",
-  "http://127.0.0.1:8788",
-  "http://localhost:3000",
-  "http://127.0.0.1:3000",
-  "http://localhost:5173",
-  "http://127.0.0.1:5173",
-  
-  // VS Code Live Server / Five Server Defaults
-  "http://localhost:5500",
-  "http://127.0.0.1:5500",
-  "http://localhost:5501",
-  "http://127.0.0.1:5501",
-  "null",                                 // Allows local file:// browser inspection
+  "null"
 ];
 
 /**
- * Builds CORS headers for THIS request only. Origins not on the allow-list
- * receive a response with NO Access-Control-Allow-Origin header — the
- * browser then blocks the response. We never echo an unauthorised origin,
- * and we never default to a "safe" allow-listed origin: that legacy
- * fallback was what made the CDN cache poisonable in the first place.
+ * CORS headers for THIS request only.
  */
 function getCorsHeaders(request) {
   const origin = request.headers.get("Origin") || "";
   const headers = { ...CORS_BASE_HEADERS };
-  if (ALLOWED_ORIGINS.includes(origin)) {
+
+  // 1. Check for an exact match against our live domains
+  const isProduction = PRODUCTION_ORIGINS.includes(origin);
+  
+  // 2. Dynamically authorize ANY port on a local machine
+  const isLocalDev = origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:");
+  
+  // 3. Handle edge cases where the browser completely strips the Origin header (local files)
+  const isStrippedLocal = origin === "";
+
+  if (isProduction || isLocalDev) {
     headers["Access-Control-Allow-Origin"] = origin;
+  } else if (isStrippedLocal) {
+    headers["Access-Control-Allow-Origin"] = "null";
   }
+
   return headers;
 }
 
