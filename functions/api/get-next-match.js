@@ -17,9 +17,19 @@ const ALLOWED_ORIGINS = [
   "https://welovecarbon.com",
   "https://carbonfootball.pages.dev",
   "https://ts92ts.github.io",
-  "http://localhost:8788",                // Wrangler Pages dev
-  "http://localhost:3000",                // Standard Vite dev port
-  "http://localhost:5173",                // Alternate Vite dev port
+// Local wrangler & build servers
+  "http://localhost:8788",
+  "http://127.0.0.1:8788",
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  
+  // VS Code Live Server / Five Server Defaults
+  "http://localhost:5500",
+  "http://127.0.0.1:5500",
+  "http://localhost:5501",
+  "http://127.0.0.1:5501",
   "null",                                 // Allows local file:// browser inspection
 ];
 
