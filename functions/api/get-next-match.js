@@ -11,7 +11,7 @@ const CORS_BASE_HEADERS = {
 // === STRICT PRODUCTION DOMAINS ===
 // No wildcards allowed for security.
 const PRODUCTION_ORIGINS = [
-  "https://carbonfootball.co.uk",
+  "https://carbonfootball.uk",
   "https://welovecarbon.com",
   "https://carbonfootball.pages.dev",
   "https://ts92ts.github.io",
