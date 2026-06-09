@@ -48,6 +48,11 @@ const CACHE_TTL_MS = 3600000; // 60 minutes KV freshness window
 const LOOP_HEADER = "X-Loop-Protection";
 const MAX_SUB_REQUESTS = 5;
 
+// Tournament-end anchor. A "concluded" verdict before this date is by
+// definition stale or upstream-poisoned — fetchFromFootballData throws so
+// the caller falls back to stale KV rather than caching a bad payload.
+const TOURNAMENT_END_UTC_MS = Date.UTC(2026, 6, 20, 0, 0); // 2026-07-20T00:00Z (Final + 24h UK buffer)
+
 /**
  * Build the response sent to the client. CORS headers are synthesised at
  * response time using the current caller's Origin — never cached.
@@ -269,6 +274,15 @@ async function fetchFromFootballData(API_KEY) {
   }
 
   const data = await response.json();
+
+  // Defensive: a healthy upstream returns a non-empty `matches` array. An
+  // empty/missing shape is a transient anomaly, not a tournament end —
+  // throw so the caller falls back to stale KV rather than caching a false
+  // "concluded" verdict downstream.
+  if (!Array.isArray(data.matches) || data.matches.length === 0) {
+    throw new Error("UPSTREAM_NO_MATCHES");
+  }
+
   const now = new Date();
   const allMatches = Array.isArray(data.matches) ? data.matches : [];
   const futureMatches = allMatches.filter((m) => new Date(m.utcDate) > now);
@@ -292,6 +306,13 @@ async function fetchFromFootballData(API_KEY) {
   }
 
   if (futureMatches.length === 0) {
+    // Only declare "concluded" once the tournament has plausibly ended.
+    // Before TOURNAMENT_END_UTC_MS, an empty future-matches list is an
+    // upstream anomaly — throw so the caller falls back to stale KV instead
+    // of caching a poisoned verdict for ~60 minutes.
+    if (Date.now() < TOURNAMENT_END_UTC_MS) {
+      throw new Error("UPSTREAM_EMPTY_BUT_TOURNAMENT_ACTIVE");
+    }
     return { status: "concluded", updatedAt: new Date().toISOString() };
   }
 
