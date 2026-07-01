@@ -1,5 +1,5 @@
 // File: functions/api/get-next-match.js
-// Dual-Layer Edge Caching Framework (CDN Cache API + Global KV Store)
+// Dual-Layer Edge Caching Framework (CDN Cache API+Global KV Store)
 
 const CORS_BASE_HEADERS = {
   "Access-Control-Allow-Methods": "GET, OPTIONS",
